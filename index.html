@@ -157,7 +157,11 @@ input,select{width:100%;font:inherit;color:var(--ink);background:var(--field);bo
   <section id="jobs" class="hide"><div class="card"><div class="ch"><div><h2>One-time projects</h2><p class="sub">Single jobs with their own client, price and payments</p></div><button class="chip g" data-openj="job">+ Add project</button></div><div id="jl"></div></div></section>
   <section id="set" class="hide"><div class="bento" style="grid-template-columns:1fr 1fr">
    <div class="card"><h2>Names on receipts</h2><p class="sub">Shown on the dashboard and on your PDF receipts</p><label for="sMe">Your name or studio</label><input id="sMe" placeholder="Your name"><label for="sCl">Client / company</label><input id="sCl" placeholder="Company name"></div>
-   <div class="card"><h2>Backup</h2><p class="sub">Records are saved in this browser. Download a copy now and then, and restore it on another device.</p><button class="btn w" style="margin-top:14px" id="bk">Download backup</button><label for="rs">Restore from backup file</label><input id="rs" type="file" accept=".json"></div></div></section>
+   <div class="card"><h2>Backup</h2><p class="sub">Records are saved in this browser. Download a copy now and then, and restore it on another device.</p><button class="btn w" style="margin-top:14px" id="bk">Download backup</button><label for="rs">Restore from backup file</label><input id="rs" type="file" accept=".json"></div>
+   <div class="card" style="grid-column:1/-1"><h2>Sync between devices</h2><p class="sub">Keeps your phone and computer showing the same data, using a private GitHub Gist in your own account.</p>
+    <div id="syOff"><label for="syTok">GitHub token (needs the “gist” permission)</label><input id="syTok" type="password" placeholder="ghp_…" autocomplete="off"><button class="btn w" style="margin-top:14px" id="syC">Connect</button></div>
+    <div id="syOn" class="hide"><p id="syS" class="sm" style="margin:12px 0 0;font-size:14px"></p><div class="acts" style="justify-content:flex-start;margin-top:14px"><button class="btn w" id="syN">Sync now</button><button class="mini x" id="syD" style="padding:12px 20px">Disconnect</button></div></div>
+    <p id="syM" class="sm" style="margin:12px 0 0"></p></div></div></section>
  </main>
 </div></div>
 
@@ -178,7 +182,8 @@ input,select{width:100%;font:inherit;color:var(--ink);background:var(--field);bo
 var KEY="project-ledger-v1",S={me:"",client:"",posts:[],pays:[],jobs:[],theme:""},mode="pay",am="post",armed=null,prev={};
 try{var r=localStorage.getItem(KEY);if(r)S=Object.assign(S,JSON.parse(r))}catch(e){}
 var $=function(i){return document.getElementById(i)};
-function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}}
+function saveLocal(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}}
+function save(){S.mod=Date.now();saveLocal();schedulePush()}
 function esc(t){return String(t==null?"":t).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]})}
 function rs(n){return "Rs. "+Number(n).toLocaleString("en-LK",{minimumFractionDigits:2,maximumFractionDigits:2})}
 function rsd(n){var s=rs(n),i=s.lastIndexOf(".");return s.slice(0,i)+'<span class="dec">'+s.slice(i)+'</span>'}
@@ -349,6 +354,49 @@ function openJ(k,id){jt=id||null;$("ovj").classList.add("show");$("fJob").classL
  else{var j=jfind(id);$("jh").textContent="Add payment"+(j?" · "+j.title:"");if(j){var b=jcalc(j).bal;$("ja").value=b>0?b:""}}
  setTimeout(function(){$(k=="job"?"jc":"ja").focus()},50)}
 
+/* ---------- cloud sync (private GitHub Gist) ---------- */
+var SK="project-ledger-sync",GD="Project Ledger data",SY={token:"",gid:""},pushT=null,pushing=false,again=false;
+try{var sq=localStorage.getItem(SK);if(sq)SY=Object.assign(SY,JSON.parse(sq))}catch(e){}
+function saveSY(){try{localStorage.setItem(SK,JSON.stringify(SY))}catch(e){}}
+function hm(){return new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})}
+function gh(path,opt){opt=opt||{};opt.headers={"Accept":"application/vnd.github+json","Authorization":"Bearer "+SY.token,"Content-Type":"application/json"};opt.cache="no-store";
+ return fetch("https://api.github.com"+path,opt).then(function(r){if(!r.ok){var e=new Error("GitHub "+r.status);e.status=r.status;throw e}return r.json()})}
+function payload(){var o=Object.assign({},S);delete o.theme;return JSON.stringify(o)}
+function syMsg(m,bad){var e=$("syM");if(e){e.textContent=m;e.style.color=bad?"var(--red)":""}}
+function errText(e){return e.status==401?"GitHub did not accept that token. Check that the gist permission is ticked.":(e.status==403||e.status==429)?"GitHub is limiting requests. Try again in a minute.":e.status==404?"The cloud copy was not found. Disconnect and connect again.":"Could not reach GitHub. Check your internet connection."}
+function renderSync(){var on=!!SY.gid;$("syOff").classList.toggle("hide",on);$("syOn").classList.toggle("hide",!on)}
+function setStat(m){$("syS").textContent=m}
+function schedulePush(){if(!SY.gid)return;clearTimeout(pushT);pushT=setTimeout(push,1500)}
+function push(){if(!SY.gid)return Promise.resolve();if(pushing){again=true;return Promise.resolve()}pushing=true;
+ return gh("/gists/"+SY.gid,{method:"PATCH",body:JSON.stringify({files:{"ledger.json":{content:payload()}}})})
+  .then(function(){setStat("Synced at "+hm());syMsg("")})
+  .catch(function(e){setStat("Not synced yet");syMsg(errText(e),true)})
+  .then(function(){pushing=false;if(again){again=false;return push()}})}
+function pull(force){if(!SY.gid)return Promise.resolve();
+ return gh("/gists/"+SY.gid).then(function(g){var f=g.files&&g.files["ledger.json"];if(!f)throw{status:404};
+  return f.truncated?fetch(f.raw_url,{cache:"no-store"}).then(function(r){return r.text()}):f.content})
+ .then(function(txt){var o=JSON.parse(txt);if(!Array.isArray(o.posts)||!Array.isArray(o.pays))throw{status:404};
+  var rm=o.mod||0,lm=S.mod||0;
+  if(force||rm>lm){var th=S.theme;S=Object.assign({me:"",client:"",jobs:[]},o);S.theme=th;saveLocal();render();setStat("Synced at "+hm());syMsg("")}
+  else if(rm<lm)return push();else{setStat("Synced at "+hm());syMsg("")}})
+ .catch(function(e){setStat("Not synced yet");syMsg(errText(e),true)})}
+function findGist(p){p=p||1;return gh("/gists?per_page=100&page="+p).then(function(list){
+ var g=list.filter(function(x){return x.description===GD&&x.files&&x.files["ledger.json"]})[0];
+ if(g)return g;return list.length==100&&p<5?findGist(p+1):null})}
+function connect(tok){SY.token=tok.trim();SY.gid="";syMsg("Connecting…");
+ return findGist().then(function(g){
+  if(g){var has=S.posts.length||S.pays.length||S.jobs.length;SY.gid=g.id;
+   if(has&&!confirm("A saved copy was found in your GitHub, and this device also has data.\n\nOK = replace this device's data with the cloud copy\nCancel = upload this device's data to the cloud instead")){S.mod=Date.now();saveLocal();saveSY();return push()}
+   saveSY();return pull(true)}
+  S.mod=Date.now();saveLocal();
+  return gh("/gists",{method:"POST",body:JSON.stringify({description:GD,public:false,files:{"ledger.json":{content:payload()}}})}).then(function(n){SY.gid=n.id;saveSY();setStat("Synced at "+hm())})})
+ .then(function(){if(SY.gid){syMsg("");toast("Sync connected");renderSync()}})
+ .catch(function(e){SY.gid="";SY.token="";saveSY();syMsg(errText(e),true)})}
+$("syC").onclick=function(){var t=$("syTok").value;if(!t.trim()){syMsg("Paste your GitHub token first.",true);return}connect(t).then(function(){$("syTok").value=""})};
+$("syN").onclick=function(){setStat("Syncing…");pull()};
+$("syD").onclick=function(){if(!confirm("Disconnect sync on this device? Your data stays here and in the cloud copy."))return;SY={token:"",gid:""};saveSY();renderSync();syMsg("");toast("Sync disconnected")};
+document.addEventListener("visibilitychange",function(){if(!document.hidden&&SY.gid)pull()});
+
 var views=["home","posts","pays","hist","jobs","set"];
 function go(v){views.forEach(function(s){$(s).classList.toggle("hide",s!=v)});
  [].forEach.call(document.querySelectorAll("#nav button,#rail button"),function(b){b.classList.toggle("on",b.dataset.v==v)});
@@ -379,13 +427,13 @@ $("fJob").onsubmit=function(e){e.preventDefault();S.jobs.push({id:uid(),ts:Date.
 $("fJPay").onsubmit=function(e){e.preventDefault();var j=jfind(jt);if(!j)return;j.pays.push({id:uid(),ts:Date.now(),amount:+$("ja").value,date:$("jyd").value,method:$("jm").value,note:$("jyn").value.trim()});save();this.reset();$("jyd").value=today();close();render();toast("Payment recorded")};
 $("rprint").onclick=statement;$("hprint").onclick=statement;$("hp").onclick=statement;
 function theme(t){if(t)document.documentElement.setAttribute("data-theme",t);else document.documentElement.removeAttribute("data-theme")}
-theme(S.theme);$("theme").onclick=function(){var dark=document.documentElement.getAttribute("data-theme")=="dark"||(!S.theme&&matchMedia("(prefers-color-scheme:dark)").matches);S.theme=dark?"light":"dark";theme(S.theme);save()};
+theme(S.theme);$("theme").onclick=function(){var dark=document.documentElement.getAttribute("data-theme")=="dark"||(!S.theme&&matchMedia("(prefers-color-scheme:dark)").matches);S.theme=dark?"light":"dark";theme(S.theme);saveLocal()};
 $("sMe").oninput=function(){S.me=this.value;save();$("hi").innerHTML="Welcome Back"+(S.me?", <span>"+esc(S.me)+"</span>":"");$("avatar").textContent=(S.me||"P").charAt(0).toUpperCase()};
 $("sCl").oninput=function(){S.client=this.value;save();$("cl").textContent=S.client||"Add your client in Details"};
 $("bk").onclick=function(){var data=JSON.stringify(S,null,2),name="ledger-backup-"+today()+".json";
  try{var a=document.createElement("a");a.href=URL.createObjectURL(new Blob([data],{type:"application/json"}));a.download=name;document.body.appendChild(a);a.click();a.remove();toast("Backup saved")}catch(e){toast("Backup failed")}};
 $("rs").onchange=function(){var f=this.files[0];if(!f)return;var rd=new FileReader();rd.onload=function(){try{var o=JSON.parse(rd.result);if(!Array.isArray(o.posts)||!Array.isArray(o.pays))throw 0;S=Object.assign({me:"",client:"",theme:"",jobs:[]},o);save();render();toast("Backup restored")}catch(x){toast("That file isn’t a valid backup")}};rd.readAsText(f)};
-$("pd").value=today();$("yd").value=today();$("jd").value=today();$("jyd").value=today();render();
+$("pd").value=today();$("yd").value=today();$("jd").value=today();$("jyd").value=today();render();renderSync();if(SY.gid){setStat("Checking cloud copy…");pull()}
 })();
 </script>
 </body>
